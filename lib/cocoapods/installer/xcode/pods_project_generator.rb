@@ -117,7 +117,15 @@ module Pod
 
         private
 
-        AppHostKey = Struct.new(:test_type, :platform)
+        AppHostKey = Struct.new(:test_type, :platform, :pod_name) do
+          def grouping_key
+            [test_type, platform.symbolic_name, pod_name]
+          end
+
+          def self.for_test_spec(test_spec_consumer, pod_target)
+            new(test_spec_consumer.test_type, pod_target.platform, pod_target.pod_name)
+          end
+        end
         InstallationResults = Struct.new(:pod_target_installation_results, :aggregate_target_installation_results)
 
         def create_project
@@ -217,22 +225,20 @@ module Pod
           UI.message '- Installing app hosts' do
             app_host_keys = pod_targets.flat_map do |pod_target|
               pod_target.test_spec_consumers.select(&:requires_app_host?).map do |test_spec_consumer|
-                AppHostKey.new(test_spec_consumer.test_type, pod_target.platform)
+                AppHostKey.for_test_spec(test_spec_consumer, pod_target)
               end
             end.uniq
 
-            app_host_keys_by_test_type = app_host_keys.group_by do |app_host_key|
-              [app_host_key.test_type, app_host_key.platform.symbolic_name]
-            end
+            app_host_keys_by_test_type = app_host_keys.group_by(&:grouping_key)
 
-            app_host_keys = app_host_keys_by_test_type.map do |(test_type, platform_symbol), keys|
+            app_host_keys = app_host_keys_by_test_type.map do |(test_type, platform_symbol, pod_name), keys|
               deployment_target = keys.map { |k| k.platform.deployment_target }.max
               platform = Platform.new(platform_symbol, deployment_target)
-              AppHostKey.new(test_type, platform)
+              AppHostKey.new(test_type, platform, pod_name)
             end
 
             app_host_keys.each_with_object({}) do |app_host_key, app_hosts_by_key|
-              app_hosts_by_key[app_host_key] = AppHostInstaller.new(sandbox, project, app_host_key.platform, app_host_key.test_type).install!
+              app_hosts_by_key[app_host_key] = AppHostInstaller.new(sandbox, project, app_host_key.platform, app_host_key.test_type, app_host_key.pod_name).install!
             end
           end
         end
@@ -338,7 +344,7 @@ module Pod
                   test_spec_consumers = test_specs.map { |test_spec| test_spec.consumer(pod_target.platform) }
                   test_spec_consumers.select(&:requires_app_host?).each do |test_spec_consumer|
                     _app_host_key, app_host_target = app_hosts_by_host_key.find do |key, _app_host|
-                      key.test_type == test_spec_consumer.test_type && key.platform.symbolic_name == pod_target.platform.symbolic_name
+                      key.grouping_key == AppHostKey.for_test_spec(test_spec_consumer, pod_target).grouping_key
                     end
                     test_native_target.add_dependency(app_host_target)
                     configure_app_host_to_native_target(app_host_target, test_native_target)
